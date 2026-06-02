@@ -14,14 +14,24 @@ const BROWSER_PROFILE_DIR = path.join(__dirname, '../.browser-profile');
 // and they'll be injected on every run (useful if the game requires login).
 const COOKIE_FILE = path.join(__dirname, '../maptap-cookies.json');
 
-// Known localStorage keys that control first-run / tutorial state on maptap.gg.
-// Add more keys here if you find them via DevTools → Application → Local Storage.
-// These are injected via addInitScript so the page sees them before its JS runs.
+// The tutorial fires when localStorage key "maptap_history" is absent or empty.
+// Source: game-init.js inline script —
+//   const historyData = localStorage.getItem('maptap_history');
+//   hasSaveData = historyData && Object.keys(JSON.parse(historyData)).length > 0;
+//   if (!hasSaveData) PARAMS.tutorial = 1;  →  startTutorial()
+//   else              PARAMS.tutorial = 0;  →  startNewRound()
+//
+// Injecting a non-empty maptap_history object makes hasSaveData = true,
+// which sets PARAMS.tutorial = 0 and goes straight to startNewRound().
 const MAPTAP_LOCALSTORAGE = {
-  hasSeenTutorial: 'true',
-  hasPlayedBefore: 'true',
-  tutorialComplete: 'true',
-  onboardingDone: 'true',
+  maptap_history: JSON.stringify({
+    highScore: 1,
+    streak: 1,
+    soundEnabled: true,
+    soundSetUp: true,
+    confirmTapMode: false,
+    lastPlay: 'June1',
+  }),
 };
 
 const CHROME_ARGS = [
