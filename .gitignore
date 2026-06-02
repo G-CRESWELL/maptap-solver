@@ -19,6 +19,12 @@ Thumbs.db
 # Remove this line if you want to commit the browser for offline use
 # ~/.cache/ms-playwright is the default path — no repo entry needed
 
+# Persistent Playwright browser profile (large, machine-specific, contains session cookies)
+.browser-profile/
+
+# Exported browser cookies — may contain auth tokens, never commit
+maptap-cookies.json
+
 # Logs
 *.log
 npm-debug.log*
