@@ -4,30 +4,22 @@ const fs = require('fs');
 
 const MAPTAP_URL = 'https://maptap.gg';
 
-// Persistent profile directory — survives between runs so cookies/localStorage
-// are preserved. First run: manually dismiss the tutorial in the browser window.
-// Every run after that: the profile remembers and the tutorial is skipped.
 const BROWSER_PROFILE_DIR = path.join(__dirname, '../.browser-profile');
-
-// Optional: export your real Chrome cookies from maptap.gg using the
-// "Cookie-Editor" extension, save as maptap-cookies.json next to this file,
-// and they'll be injected on every run (useful if the game requires login).
 const COOKIE_FILE = path.join(__dirname, '../maptap-cookies.json');
 
 // The tutorial fires when localStorage key "maptap_history" is absent or empty.
-// Source: game-init.js inline script —
-//   const historyData = localStorage.getItem('maptap_history');
+// Source (game-init.js inline script):
 //   hasSaveData = historyData && Object.keys(JSON.parse(historyData)).length > 0;
-//   if (!hasSaveData) PARAMS.tutorial = 1;  →  startTutorial()
-//   else              PARAMS.tutorial = 0;  →  startNewRound()
+//   if (!hasSaveData) PARAMS.tutorial = 1  →  startTutorial()
+//   else              PARAMS.tutorial = 0  →  startNewRound()
 //
-// Injecting a non-empty maptap_history object makes hasSaveData = true,
-// which sets PARAMS.tutorial = 0 and goes straight to startNewRound().
+// confirmTapMode: false is critical — if true the game shows a confirmation
+// button after every tap, which would block the solver waiting for a second click.
 const MAPTAP_LOCALSTORAGE = {
   maptap_history: JSON.stringify({
     highScore: 1,
     streak: 1,
-    soundEnabled: true,
+    soundEnabled: false,
     soundSetUp: true,
     confirmTapMode: false,
     lastPlay: 'June1',
@@ -36,7 +28,6 @@ const MAPTAP_LOCALSTORAGE = {
 
 const CHROME_ARGS = [
   '--disable-blink-features=AutomationControlled',
-  // Suppress Chrome UI features that crash on Ubuntu 26.04 (ProfileMenuView DCHECK)
   '--no-first-run',
   '--no-default-browser-check',
   '--disable-sync',
@@ -48,98 +39,34 @@ const CHROME_ARGS = [
 
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-// Injected into the browser page to rotate the 3D globe to face a given lat/lng.
-// Tries four strategies in order of reliability:
-//   1. OrbitControls API (Three.js controls exposed on window)
-//   2. globe.gl pointOfView()
-//   3. React fiber walk (stub — extend if needed)
-//   4. Synthetic pointer drag fallback
-const ROTATE_GLOBE_SCRIPT = `
-async function rotateGlobeTo(lat, lng) {
-  await new Promise(r => setTimeout(r, 300));
-
-  const latRad = (lat * Math.PI) / 180;
-  const lngRad = (lng * Math.PI) / 180;
-
-  // Strategy 1: Three.js OrbitControls exposed on window
-  const possibleControls = [
-    window.controls,
-    window.orbitControls,
-    window.globeControls,
-    window.threeControls,
-  ].filter(Boolean);
-
-  for (const ctrl of possibleControls) {
-    if (ctrl && typeof ctrl.setAzimuthalAngle === 'function') {
-      ctrl.setAzimuthalAngle(-lngRad);
-      ctrl.setPolarAngle(Math.PI / 2 - latRad);
-      ctrl.update();
-      return 'controls-api';
-    }
-  }
-
-  // Strategy 2: globe.gl library instance
-  if (window.__globe__ && typeof window.__globe__.pointOfView === 'function') {
-    window.__globe__.pointOfView({ lat, lng, altitude: 1.5 }, 800);
-    await new Promise(r => setTimeout(r, 900));
-    return 'globe-gl-pov';
-  }
-
-  // Strategy 3: React fiber walk (extend here if globe is buried in component state)
-  const root = document.querySelector('#root') || document.querySelector('[data-reactroot]');
-  if (root && root._reactFiber) {
-    // Deep fiber walk would go here — add if strategies 1 & 2 both miss
-  }
-
-  // Strategy 4: Synthetic mouse-drag fallback (approximate)
-  const canvas = document.querySelector('canvas');
-  if (!canvas) throw new Error('No canvas found');
-
-  const rect = canvas.getBoundingClientRect();
-  const cx = rect.left + rect.width / 2;
-  const cy = rect.top + rect.height / 2;
-
-  const dragX = -lng * (rect.width / 360);
-  const dragY = lat * (rect.height / 180);
-
-  canvas.dispatchEvent(new PointerEvent('pointerdown', { clientX: cx, clientY: cy, bubbles: true }));
-  await new Promise(r => setTimeout(r, 50));
-  canvas.dispatchEvent(new PointerEvent('pointermove', { clientX: cx + dragX, clientY: cy + dragY, bubbles: true }));
-  await new Promise(r => setTimeout(r, 50));
-  canvas.dispatchEvent(new PointerEvent('pointerup', { clientX: cx + dragX, clientY: cy + dragY, bubbles: true }));
-
-  return 'drag-fallback';
-}
-`;
+// How long to wait after submitting a guess before the next round is ready.
+// Source: game-init.js — setTimeout(() => startNewRound(), 7000 + arcDuration)
+// arcDuration is 400–1500ms depending on score. We use 9500ms to be safe.
+const ROUND_ADVANCE_MS = 9500;
 
 /**
- * Opens maptap.gg in a visible Chromium browser and clicks the correct
- * globe location for each city in the provided array.
+ * Opens maptap.gg and solves all 5 cities by directly calling the game's
+ * own handleMapClick(lat, lng) global function with exact coordinates.
  *
- * Session persistence is layered — each layer is a fallback for the one above:
- *   Layer 1: Persistent browser profile (.browser-profile/) — survives between runs
- *   Layer 2: Cookie injection from maptap-cookies.json (optional, for logged-in sessions)
- *   Layer 3: localStorage injection via addInitScript (fires before page JS, sets tutorial flags)
+ * Why direct function call instead of canvas click:
+ *   The game already converts canvas pixels → lat/lng internally before
+ *   calling handleMapClick. Calling it directly with the exact target
+ *   coordinates is 100% accurate and avoids globe rotation alignment errors.
  *
  * @param {Array<{name: string, lat: number, lng: number}>} cities
- * @returns {Promise<Array<{name, lat, lng, clicked, strategy}|{error}>>}
+ * @returns {Promise<Array<{name, lat, lng, clicked}|{error}>>}
  */
 async function solvePuzzle(cities) {
-  // ── Layer 1: Persistent profile ──────────────────────────────────────────
-  // launchPersistentContext stores cookies, localStorage, and IndexedDB on disk.
-  // First run: dismiss the tutorial manually in the browser window.
-  // All subsequent runs: the profile loads it pre-dismissed.
   console.log(`Using persistent browser profile: ${BROWSER_PROFILE_DIR}`);
+
   const context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
     headless: false,
-    slowMo: 500,
+    slowMo: 200,
     args: CHROME_ARGS,
     userAgent: USER_AGENT,
   });
 
-  // ── Layer 2: Cookie injection (optional) ─────────────────────────────────
-  // If maptap-cookies.json exists, inject it so the game sees you as logged in.
-  // Export cookies from your real browser using the "Cookie-Editor" extension.
+  // Inject real browser cookies if exported from Cookie-Editor extension
   if (fs.existsSync(COOKIE_FILE)) {
     try {
       const cookies = JSON.parse(fs.readFileSync(COOKIE_FILE, 'utf8'));
@@ -150,10 +77,7 @@ async function solvePuzzle(cities) {
     }
   }
 
-  // ── Layer 3: localStorage injection ──────────────────────────────────────
-  // addInitScript runs before any page JavaScript, so the app reads these
-  // values as if they were already stored from a previous real session.
-  // This is the most reliable way to suppress first-run / tutorial UI.
+  // Inject maptap_history before page JS runs so hasSaveData = true → tutorial skipped
   await context.addInitScript((storageData) => {
     for (const [key, value] of Object.entries(storageData)) {
       try { localStorage.setItem(key, value); } catch (_) {}
@@ -165,68 +89,65 @@ async function solvePuzzle(cities) {
 
   try {
     console.log('Navigating to MapTap...');
-    await page.goto(MAPTAP_URL, { waitUntil: 'networkidle', timeout: 30000 });
+    // 'load' instead of 'networkidle' — TileGlobe continuously loads map tiles
+    // so the network never becomes idle, causing a 30s timeout with networkidle.
+    await page.goto(MAPTAP_URL, { waitUntil: 'load', timeout: 30000 });
 
+    // Wait for the canvas to appear
     await page.waitForSelector('canvas', { timeout: 15000 });
-    console.log('Globe canvas found. Waiting for Three.js to initialize...');
-    await page.waitForTimeout(3000);
+    console.log('Canvas found. Waiting for window.myGlobeReady...');
 
-    // Inject the rotation helper function into the live page
-    await page.evaluate(ROTATE_GLOBE_SCRIPT);
+    // window.myGlobeReady is a Promise the game resolves when the globe and all
+    // click handlers are fully wired up. Polling it avoids hardcoded sleep times.
+    await page.waitForFunction(() => {
+      return window.myGlobeReady instanceof Promise &&
+             typeof window.handleMapClick === 'function' &&
+             typeof window.myGlobe !== 'undefined';
+    }, { timeout: 20000 });
+    console.log('Globe ready. Starting solve...');
 
-    // Dismiss any tutorial overlays that survived the localStorage injection
-    try {
-      await page.keyboard.press('Escape');
-      await page.waitForTimeout(500);
-    } catch (_) {}
-
-    // Click any "Play", "Start", or "Got it" button that might block the globe
-    const startButton = page.locator('button:has-text("Play"), button:has-text("Start"), button:has-text("Got it")');
-    if (await startButton.count() > 0) {
-      await startButton.first().click();
-      await page.waitForTimeout(1000);
-    }
+    // Rotate globe to face first city as a visual cue that the solver is running
+    await page.evaluate(({ lat, lng, alt }) => {
+      window.myGlobe.pointOfView({ lat, lng, altitude: alt }, 1500);
+    }, { lat: cities[0].lat, lng: cities[0].lng, alt: 1.5 });
+    await page.waitForTimeout(1800);
 
     for (let i = 0; i < cities.length; i++) {
       const city = cities[i];
-      console.log(`\n[${i + 1}/${cities.length}] Solving: ${city.name} (${city.lat}, ${city.lng})`);
+      console.log(`\n[${i + 1}/${cities.length}] Guessing: ${city.name} (${city.lat}, ${city.lng})`);
 
-      // Rotate the globe so the target city faces the camera
-      const strategy = await page.evaluate(
-        ({ lat, lng }) => rotateGlobeTo(lat, lng),
-        { lat: city.lat, lng: city.lng }
-      );
-      console.log(`  Globe rotated using strategy: ${strategy}`);
+      // Rotate globe to the target city so the viewer can see where we're clicking
+      await page.evaluate(({ lat, lng }) => {
+        window.myGlobe.pointOfView({ lat, lng, altitude: 1.5 }, 800);
+      }, { lat: city.lat, lng: city.lng });
+      await page.waitForTimeout(900);
 
-      // Wait for rotation animation to settle before clicking
-      await page.waitForTimeout(1200);
+      // Call the game's own click handler directly with exact coordinates.
+      // This is the same function the globe fires after converting a canvas
+      // pixel click to lat/lng — calling it directly guarantees perfect accuracy.
+      await page.evaluate(({ lat, lng }) => {
+        window.handleMapClick(lat, lng);
+      }, { lat: city.lat, lng: city.lng });
+      console.log(`  Called handleMapClick(${city.lat}, ${city.lng})`);
 
-      // Click the canvas center — the target should now be centered there
-      const canvas = page.locator('canvas').first();
-      const box = await canvas.boundingBox();
-      if (!box) throw new Error('Canvas bounding box not found');
+      results.push({ name: city.name, lat: city.lat, lng: city.lng, clicked: true });
 
-      const clickX = box.x + box.width / 2;
-      const clickY = box.y + box.height / 2;
-
-      await page.mouse.click(clickX, clickY);
-      console.log(`  Clicked canvas center at (${Math.round(clickX)}, ${Math.round(clickY)})`);
-
-      results.push({ name: city.name, lat: city.lat, lng: city.lng, clicked: true, strategy });
-
-      // Wait for the game to register the guess and advance to the next city
-      await page.waitForTimeout(2500);
+      if (i < cities.length - 1) {
+        // Wait for scoring animation + round advance before the next city.
+        // Source: setTimeout(() => startNewRound(), 7000 + arcDuration)
+        // arcDuration ~ 400–1500ms, so 9500ms covers the worst case.
+        console.log(`  Waiting ${ROUND_ADVANCE_MS}ms for round to advance...`);
+        await page.waitForTimeout(ROUND_ADVANCE_MS);
+      }
     }
 
-    console.log('\nAll cities solved!');
+    console.log('\nAll cities solved! Waiting to see final score...');
+    await page.waitForTimeout(10000);
 
   } catch (err) {
     console.error('Solver error:', err);
     results.push({ error: err.message });
   } finally {
-    // Pause so you can see the final score before the browser closes
-    await page.waitForTimeout(10000);
-    // close() saves the persistent profile back to disk
     await context.close();
   }
 
