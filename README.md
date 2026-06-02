@@ -173,6 +173,9 @@ The URL format is `/<MonthDay>.js` (e.g. `June2.js`). If it breaks, check `serve
 **Solver times out on navigation**
 Make sure you're on `waitUntil: 'load'` in `server/solver.js` (not `networkidle` — the tile-loading globe keeps the network permanently active).
 
+**Browser closes before I can share my score**
+It shouldn't — the browser stays open after all 5 cities are solved. It only closes when you start the next solve run. If you see it closing early, check for an error in the server console.
+
 **Game doesn't advance after first city**
 The round advance delay is `9500ms` (`ROUND_ADVANCE_MS` in `server/solver.js`). If your connection is slow and the arc animation runs long, increase this value.
 

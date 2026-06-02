@@ -44,19 +44,27 @@ const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/
 // arcDuration is 400–1500ms depending on score. We use 9500ms to be safe.
 const ROUND_ADVANCE_MS = 9500;
 
+// Holds the browser context between runs so it can be closed at the start of
+// the next solve rather than immediately after the current one. This keeps the
+// browser open after solving so the user can read and share their score.
+let activeContext = null;
+
 /**
  * Opens maptap.gg and solves all 5 cities by directly calling the game's
  * own handleMapClick(lat, lng) global function with exact coordinates.
  *
- * Why direct function call instead of canvas click:
- *   The game already converts canvas pixels → lat/lng internally before
- *   calling handleMapClick. Calling it directly with the exact target
- *   coordinates is 100% accurate and avoids globe rotation alignment errors.
+ * The browser stays open after solving so you can share your score.
+ * It is closed automatically at the start of the next solve run.
  *
  * @param {Array<{name: string, lat: number, lng: number}>} cities
  * @returns {Promise<Array<{name, lat, lng, clicked}|{error}>>}
  */
 async function solvePuzzle(cities) {
+  // Close any browser left open from a previous solve run
+  if (activeContext) {
+    try { await activeContext.close(); } catch (_) {}
+    activeContext = null;
+  }
   console.log(`Using persistent browser profile: ${BROWSER_PROFILE_DIR}`);
 
   const context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
@@ -141,14 +149,16 @@ async function solvePuzzle(cities) {
       }
     }
 
-    console.log('\nAll cities solved! Waiting to see final score...');
-    await page.waitForTimeout(10000);
+    console.log('\nAll cities solved! Browser will stay open — share your score, then run again to close it.');
+    // Keep the context reference so it can be closed on the next solve run
+    activeContext = context;
 
   } catch (err) {
     console.error('Solver error:', err);
     results.push({ error: err.message });
-  } finally {
-    await context.close();
+    // Close immediately on error — no score screen to share
+    try { await context.close(); } catch (_) {}
+    activeContext = null;
   }
 
   return results;
