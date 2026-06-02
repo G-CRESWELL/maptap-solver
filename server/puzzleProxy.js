@@ -1,9 +1,18 @@
 const vm = require('vm');
 
-const PUZZLE_URL = 'https://maptap.gg/data/this_day_in_history';
+// URL format: /data/this_day_in_history/June2.js?v=1
+// The month name is unabbreviated, the day has no zero-padding.
+function getPuzzleUrl() {
+  const now = new Date();
+  const month = now.toLocaleString('en-US', { month: 'long' });
+  const day = now.getDate();
+  return `https://maptap.gg/data/this_day_in_history/${month}${day}.js?v=1`;
+}
 
 async function fetchPuzzle() {
-  const response = await fetch(PUZZLE_URL, {
+  const url = getPuzzleUrl();
+  console.log('Fetching puzzle from:', url);
+  const response = await fetch(url, {
     headers: {
       'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       'Accept': 'text/javascript, application/javascript, */*',
