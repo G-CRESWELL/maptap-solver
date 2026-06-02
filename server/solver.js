@@ -77,7 +77,17 @@ async function solvePuzzle(cities) {
   const browser = await chromium.launch({
     headless: false,  // Keep visible so you can watch — set true once verified
     slowMo: 500,
-    args: ['--disable-blink-features=AutomationControlled'],
+    args: [
+      '--disable-blink-features=AutomationControlled',
+      // Suppress Chrome UI features that crash on Ubuntu 26.04 (ProfileMenuView DCHECK)
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-sync',
+      '--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider',
+      '--disable-background-networking',
+      '--disable-client-side-phishing-detection',
+      '--no-sandbox',
+    ],
   });
 
   // Use a real-browser user agent to avoid bot detection
