@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Vite build output
+dist/
+dist-ssr/
+
+# Local env files
+.env
+.env.local
+.env.*.local
+
+# Editor & OS
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Playwright browser cache (large binaries, re-downloaded by each dev)
+# Remove this line if you want to commit the browser for offline use
+# ~/.cache/ms-playwright is the default path — no repo entry needed
+
+# Logs
+*.log
+npm-debug.log*
